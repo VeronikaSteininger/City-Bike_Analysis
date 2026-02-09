@@ -1,0 +1,480 @@
+#===========================ImPORT ========================
+import streamlit as st
+import pandas as pd
+import numpy as np
+from plotly.subplots import make_subplots
+import plotly.graph_objects as go
+import matplotlib.pyplot as plt
+from datetime import datetime as dt
+import folium
+from streamlit_folium import st_folium
+import os
+from PIL import Image
+import plotly.express as px
+from folium.plugins import TagFilterButton, HeatMap
+
+
+# ===================== DEV RESET BUTTON =====================
+if st.sidebar.button("🔄 Reset app state"):
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    st.session_state.clear()
+    st.rerun()
+
+
+########################### Initial settings for the dashboard ##################################################################
+
+
+st.set_page_config(page_title = 'City Bikes Strategy Dashboard', layout='wide')
+st.title("City Bikes Strategy Dashboard")
+
+
+# ===================== SIDEBAR =====================
+st.sidebar.title("Aspect Selector")
+page = st.sidebar.selectbox(
+    'Select aspect analysis',
+    [
+        "Intro page",
+        "Weather component and bike usage",
+        "Most popular stations",
+        "Interactive map with aggregated bike trips",
+        "Trip Statistic",
+        "Conclusions and Recommendations"
+    ]
+)    
+
+# ===================== LOAD DATA =====================
+df = pd.read_csv('citibike_sample_reduced_2.6.csv')
+df['date'] = pd.to_datetime(df['day'])
+top20 = pd.read_csv('top20_stations.csv', index_col=0)  
+
+
+# ===================== INTRO PAGE =====================
+if page == "Intro page":
+    st.markdown("""
+                **The dashboard will help to understand the current city-bike situation in New York.**  \n
+                **Its aim is to understand user behaviour and to avoid distribution problems by concentrating on 5 different sections:** 
+                """
+    )
+    st.markdown("- Weather component and bike usage ")
+    st.markdown("- Most popular stations")
+    st.markdown("- Interactive maps with start/end stations and aggregated bike trips")
+    st.markdown("- Trip Statistic")
+    st.markdown("- Conclusions and Recommendations")
+
+    st.markdown(" Datasources: Free Dataset from Citi Bike for the year 2022 and weather data for the year 2022 using NOAA’s API. Image source: https://www.pexels.com/photo/row-of-blue-bikes-for-rent-10701006/")
+
+
+    # aktuelles Arbeitsverzeichnis
+    BASE_DIR = os.getcwd()
+
+    # Bild laden
+    myImage = Image.open(os.path.join(BASE_DIR, "pexels-james-kampeis-10701006.jpg"))
+    st.image(myImage)
+
+
+# ===================== WEATHER PAGE =====================
+elif page == "Weather component and bike usage":
+
+    st.header("**Weather component and bike usage**")
+
+    df = df.sort_values('date')
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    fig.add_trace(
+        go.Scatter(
+            x=df['date'],
+            y=df['bike_rides_daily'],
+            name='Daily bike rides',
+            line=dict(color='blue')
+        ),
+        secondary_y=False
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=df['date'],
+            y=df['avgTemp'],
+            name='Average Temperature',
+            line=dict(color='red')
+        ),
+        secondary_y=True
+    )
+
+    fig.update_xaxes(title_text="Year 2022")
+    fig.update_yaxes(title_text="Bike Rides Daily", secondary_y=False)
+    fig.update_yaxes(title_text="Average Temperature", secondary_y=True)
+
+    fig.update_layout(title_text="Temperature and Trips in 2022", height=500)
+
+    st.plotly_chart(fig, width='stretch')
+
+    st.markdown(
+        "There is an obvious correlation between temperature changes and bike usage.  \n" 
+        "As expected, the demand increases with warmer temperatures.  \n"  
+        "Therefore shortages of bikes in docking stations are most likely between May and October."
+    )
+
+# ============================== STATION PAGE ============================
+elif page == 'Most popular stations':
+
+    st.header("**Most popular Stations**")
+
+    # -------------------- Sidebar: Season Filter --------------------
+    with st.sidebar:
+        season_filter = st.multiselect(
+            label='Select season(s)',
+            options=df['season'].unique(),
+            default=df['season'].unique()
+        )
+
+    # -------------------- Daten filtern --------------------
+    df1 = df.query('season == @season_filter').copy()
+    df1['value'] = 1  # jede Fahrt zählt 1
+
+    # -------------------- Aggregation nach Station --------------------
+    df_groupby = (
+    df1.groupby('start_station_name', as_index=False)
+        .agg({'value': 'sum'})
+        )
+
+    # Top 20 Stationen
+    top20 = df_groupby.nlargest(20, 'value').copy()
+
+    # Prozentanteil je Station
+    total_trips = df1['value'].sum()
+    top20['percent'] = 100 * top20['value'] / total_trips
+
+    # Anteil Top 20 gesamt (für Metric)
+    top20_share = top20['percent'].sum()
+
+    # -------------------- KPI --------------------
+    st.markdown("**Share of rides generated by Top 20 stations**")
+    st.metric(
+    label='',
+    value=f"{top20_share:.1f}%"
+    )
+
+   
+
+
+
+    # -------------------- Layout: 2 Spalten --------------------
+    col1, col2 = st.columns(2)
+
+    # -------------------- Bar Chart (relativ!) --------------------
+    with col1:
+        fig_bar = go.Figure(
+            go.Bar(
+                x=top20['start_station_name'],
+                y=top20['percent'],
+                marker={
+                    'color': top20['percent'],
+                    'colorscale': 'Blues'
+                }
+            )
+        )
+
+        fig_bar.update_layout(
+            title='Top 20 stations – share of total rides (%)',
+            xaxis_title='Start station',
+            yaxis_title='Share of rides (%)',
+            height=500
+        )
+
+        st.plotly_chart(
+            fig_bar,
+            use_container_width=True,
+            key='stations_bar_percent'
+        )
+
+    # -------------------- Pie Chart (Top 20 vs Others) --------------------
+    with col2:
+        other_share = 100 - top20_share
+
+        pie_df = pd.DataFrame({
+            'category': ['Top 20 stations', 'All other stations'],
+            'percent': [top20_share, other_share]
+        })
+
+        fig_pie = go.Figure(
+            go.Pie(
+                labels=pie_df['category'],
+                values=pie_df['percent'],
+                hole=0.4,
+                textinfo='label+percent'
+            )
+        )
+
+        fig_pie.update_layout(
+            title='Share of rides: Top 20 vs rest of network',
+            height=500
+        )
+
+        st.plotly_chart(
+            fig_pie,
+            use_container_width=True,
+            key='stations_pie_share'
+        )
+
+    # -------------------- Interpretation --------------------
+    st.markdown(
+        "Although some stations are clearly more popular than others, the Top 20 stations "
+        "account for only a small share of total rides.   \nThis pattern applies to all seasons. "
+        "(For SEASONS please use the filterbottom at the left)"
+        
+        "  \nThis observation indicates that Citi Bike usage "
+        "is widely distributed across the network, highlighting the importance of broad "
+        "station coverage for both accessibility and the overall business model."
+    )
+
+
+
+# ============================== INTERACTIVE MAP PAGE ============================
+
+
+elif page == 'Interactive map with aggregated bike trips':
+
+    st.header("**Interactive map showing aggregated bike trips over New York**")
+
+        # -------------------- Daten filtern --------------------
+    df_map = df.copy()  
+
+    df_m = (
+        df_map
+        .groupby([
+            'month',
+            'start_station_name',
+            'end_station_name',
+            'start_lat', 'start_lng',
+            'end_lat', 'end_lng'
+        ])
+        .size()                # Series
+        .to_frame('trips')     # in DataFrame umwandeln + Spaltenname
+        .reset_index()         # Index zurück in Spalten
+    )
+
+
+
+    # -------------------- Tabs für verschiedene Karten --------------------
+    tab1, tab2, tab3 = st.tabs(["Start stations", "End stations", "Aggregated trips"])
+
+
+
+    # -------------------- Karte 1: Startstations --------------------
+    with tab1:
+        st.write("**Start Stations**")
+        m_start = folium.Map(location=[40.7128, -74.0060], zoom_start=12, tiles="cartodbpositron")
+
+        for _, row in df_map.iterrows():
+            folium.CircleMarker(
+                location=[row['start_lat'], row['start_lng']],
+                radius=5,
+                color='green',
+                fill=True,
+                fill_opacity=0.6,
+                popup=f"{row['start_station_name']} ({row['month']})",
+                tags=[row['month']]
+            ).add_to(m_start)
+
+      
+        st.components.v1.html(m_start._repr_html_(), height=800)
+
+        st.markdown("""
+    <div style="margin-top:0px;">
+  Start and end stations are distributed fairly evenly across large parts of the city, with a particularly high density in Manhattan.  \n
+There are some notable differences in New Jersey: there are only end stations, but no start stations. Further investigation is needed here.
+    </div>
+    """, unsafe_allow_html=True)
+
+    # -------------------- Karte 2: Endstations --------------------
+    with tab2:
+        st.write("**End Stations**")
+        m_end = folium.Map(location=[40.7128, -74.0060], zoom_start=12, tiles="cartodbpositron")
+
+        for _, row in df_map.iterrows():
+            folium.CircleMarker(
+                location=[row['end_lat'], row['end_lng']],
+                radius=5,
+                color='red',
+                fill=True,
+                fill_opacity=0.6,
+                popup=f"{row['end_station_name']} ({row['month']})",
+                tags=[row['month']]
+            ).add_to(m_end)
+
+        
+        st.components.v1.html(m_end._repr_html_(), height=800)
+
+        st.markdown("""
+    <div style="margin-top:0px;">
+  Start and end stations are distributed fairly evenly across large parts of the city, with a particularly high density in Manhattan.  \n
+There are some notable differences in New Jersey: there are only end stations, but no start stations. Further investigation is needed here.
+    </div>
+    """, unsafe_allow_html=True)
+
+ # -------------------- Karte 3: Aggregierte Trips --------------------
+
+    with tab3:
+        st.write("**Aggregated Bike Trips according to month**")
+
+        m_agg = folium.Map(location=[40.7128, -74.0060], zoom_start=12, tiles="cartodbpositron")
+
+        for month in sorted(df_m['month'].unique()):
+
+
+            df_month = df_m[df_m['month'] == month] # skip empty month impotzant for layer control
+            if df_month.empty:continue
+
+            fg = folium.FeatureGroup(
+                name=str(month),
+                show=True 
+            )
+
+         
+            max_trips = df_month['trips'].max()
+            if pd.isna(max_trips) or max_trips == 0:
+                max_trips = 1
+
+            for _, row in df_month.iterrows():
+                folium.PolyLine(
+                    locations=[
+                        (row['start_lat'], row['start_lng']),
+                        (row['end_lat'], row['end_lng'])
+                    ],
+                    color='blue',
+                    weight=1 + (row['trips'] / max_trips) * 4,
+                    opacity=0.5,
+                    tooltip=(
+                        f"{row['start_station_name']} → "
+                        f"{row['end_station_name']}: "
+                        f"{row['trips']} trips"
+                    )
+                ).add_to(fg)
+
+
+    # Heatmap pro Monat
+            heat_data = df_month[['end_lat', 'end_lng', 'trips']].values.tolist()
+            HeatMap(
+                heat_data,
+                radius=15,
+                blur=10,
+                max_zoom=13
+            ).add_to(fg)
+
+            fg.add_to(m_agg)
+        
+        #TagFilterButton( data=sorted(df_m['month'].unique())
+       # ).add_to(m_agg) -- tag filter biutton not necessary since I am using LayerControl
+
+    folium.LayerControl(collapsed=False, position="topright").add_to(m_agg)
+
+
+    st.components.v1.html(m_agg._repr_html_(), height=800)
+
+  # -------------------- Erklärungstext --------------------
+ 
+    st.markdown("""
+    <div style="margin-top:0px;">
+    Use the checkbox in the right to display trips for selected months.  <br>
+    The map shows the highest concentration over the year in Manhattan, but also high frequencies in Brooklyn and Queens.  <br>
+    And it shows a huge variety of different routes instead of a few dominant routes.
+    </div>
+    """, unsafe_allow_html=True)
+
+#======================= Statistik-Page ============================
+
+
+elif page == "Trip Statistic":
+
+    st.header("**Trip Statistic**")
+    
+
+
+    df_map = df.copy()  
+
+    df_m = (
+        df_map
+        .groupby([
+            'month',
+            'start_station_name',
+            'end_station_name',
+            'start_lat', 'start_lng',
+            'end_lat', 'end_lng'
+        ])
+        .size()                # Series
+        .to_frame('trips')     # in DataFrame umwandeln + Spaltenname
+        .reset_index()         # Index zurück in Spalten
+    )
+
+    
+
+    trips = df_m['trips'].values
+    trips_sorted = np.sort(trips)
+    cdf = np.arange(1, len(trips_sorted)+1) / len(trips_sorted)
+
+    fig, ax1 = plt.subplots(figsize=(10,5))
+
+    # Histogramm
+    color_hist = 'skyblue'
+    ax1.hist(trips, bins=range(1, trips.max()+2), color=color_hist, edgecolor='black', alpha=0.6)
+    ax1.set_xlabel("Number of trips per station pair")
+    ax1.set_ylabel("Number of station pairs", color=color_hist)
+    ax1.tick_params(axis='y', labelcolor=color_hist)
+    ax1.set_yscale('log')
+
+    # ECDF
+    ax2 = ax1.twinx()
+    color_cdf = 'darkorange'
+    ax2.plot(trips_sorted, cdf, marker='.', linestyle='none', color=color_cdf)
+    ax2.set_ylabel("Cumulative fraction of station pairs", color=color_cdf)
+    ax2.tick_params(axis='y', labelcolor=color_cdf)
+    ax2.set_ylim(0,1.05)
+
+    plt.title("Distribution and cumulative distribution of trips per station pair")
+
+    st.pyplot(fig) 
+
+    st.markdown("""
+    <div style="margin-top:0px;">
+    The chart shows the that most station pairs are used very infrequently, with only a few pairs accounting for a larger number of trips.  \n
+    CAUTION: these are not absulut numbers but based on a sample.
+    </div>
+    """, unsafe_allow_html=True)
+
+  
+else:
+    
+    st.header("**Conclusions and recommendations**")
+    
+    st.markdown("""
+The analysis has shown that the Citybike network is used regularly in large parts of the city.
+
+- This proves that Citybike makes a fundamental contribution to public and environmentally sustainable local transport.
+- It also shows that the focus is not on individual stations or routes, but on the entire infrastructure network.
+- The City Bike infrastructure network reflects the flexibility of the bicycle as a mode of transport and is used accordingly.
+
+- There are fluctuations between warm and cold seasons due to weather conditions.  
+- Nevertheless, there is lively use throughout the year – another argument in favour of Citi Bike as an actual mode of transport and not just as a tourist attraction or leisure activity, for example.
+
+**As far as distribution problems are concerned:**
+
+- Focusing on individual stations or routes is not effective.
+- It remains important to serve and maintain the entire network.
+- The stations in New Jersey are not accepted or only partially accepted. There is potential for savings here.
+- A large number of bicycles must be provided, especially from May to October.
+
+**Limitations of the analysis:**
+
+The available data records the start and end stations of the trips.  
+It does not provide any information about the number of parking spaces and their utilisation.  
+Further analysis would be required to effectively address the distribution problem.
+""")
+
+   
+
+
+
+
+
